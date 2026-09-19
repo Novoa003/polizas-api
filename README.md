@@ -1,77 +1,192 @@
-# API de Gestión de Pólizas — Prueba Técnica Seguros Bolívar
+# API de Gestión de Pólizas 
 
-API REST desarollada con el  objetivo es gestionar pólizas de arrendamiento de inmuebles (Individuales y Colectivas), aplicando reglas de negocio, integración simulada con el CORE legado y buenas prácticas de desarrollo.
-
----
-
-## Tabla de contenido
-
-1. [Contexto del negocio](#-contexto-del-negocio)
-2. [Alcance de la solución](#-alcance-de-la-solución)
-3. [Tecnologías utilizadas](#-tecnologías-utilizadas)
-4. [Arquitectura del proyecto](#-arquitectura-del-proyecto)
-5. [Modelo de dominio](#-modelo-de-dominio)
-6. [Reglas de negocio implementadas](#-reglas-de-negocio-implementadas)
-7. [Seguridad](#-seguridad)
-8. [Integración con el CORE (mock)](#-integración-con-el-core-mock)
-9. [Instalación y ejecución](#-instalación-y-ejecución)
-10. [Endpoints disponibles](#-endpoints-disponibles)
-11. [Ejemplos de uso (curl)](#-ejemplos-de-uso-curl)
-12. [Manejo de errores](#-manejo-de-errores)
-13. [Decisiones técnicas](#-decisiones-técnicas)
-14. [Posibles mejoras futuras](#-posibles-mejoras-futuras)
+API REST para la gestión de pólizas de arrendamiento (Individuales y Colectivas). Implementa las reglas de negocio del Módulo 2: crear, listar, renovar, cancelar pólizas y riesgos, con integración simulada al CORE legado.
 
 ---
 
-##  Contexto del negocio
+## Tecnologías
 
-Seguros Bolívar maneja dos tipos de pólizas para arrendamiento de inmuebles:
-
-| Tipo | Tomador | Asegurado | Beneficiario | Riesgos |
-|------|---------|-----------|--------------|---------|
-| **Individual** | Arrendatario | Arrendatario | Arrendador | 1 |
-| **Colectiva** | Inmobiliaria / Administración de copropiedades | Arrendatarios | Arrendadores | 1 a N |
-
-Todas las pólizas cuentan con:
-
-- Periodo de vigencia (fecha inicio – fecha fin)
-- Valor de canon mensual de arrendamiento
-- Prima = canon mensual × número de meses de vigencia
-- Renovación por el mismo periodo inicial, ajustando el canon según el IPC
+| Tecnología | Versión |
+|------------|---------|
+| Java | 24 |
+| Spring Boot | 4.1.1 |
+| Spring Data JPA + Hibernate | (incluido) |
+| H2 Database | (en memoria) |
+| Lombok | 1.18.38 |
+| Maven | 3.9+ |
 
 ---
 
-##  Alcance de la solución
+## Instalación y ejecución
 
-Esta prueba implementa **solo lo esencial** solicitado en el Módulo 2:
+### Requisitos
+- Java 24+
+- Maven 3.9+
 
-- Listar pólizas filtrando por tipo y estado.
-- Listar riesgos de una póliza.
-- Renovar una póliza (incremento de canon y prima por IPC).
-- Cancelar una póliza (cancela todos sus riesgos).
-- Agregar riesgos a pólizas colectivas.
-- Cancelar riesgos individualmente.
-- Mock del CORE que registra en logs los eventos enviados.
+### Pasos
 
----
+```bash
+git clone https://github.com/Novoa003/polizas-api.git
+cd polizas-api
+mvn clean install
+mvn spring-boot:run
+```
 
-## 🛠 Tecnologías utilizadas
+La API queda en: `http://localhost:8080`
 
-| Tecnología | Versión    | Propósito |
-|------------|------------|-----------|
-| Java | 24         | Lenguaje base |
-| Spring Boot | 4.1.1      | Framework principal |
-| Spring Web MVC | (incluido) | Exposición de endpoints REST |
-| Spring Data JPA | (incluido) | Persistencia |
-| Hibernate | (incluido) | ORM |
-| H2 Database | (incluido) | Base de datos en memoria para pruebas |
-| Lombok | (incluido) | Reducción de código boilerplate |
-| Jakarta Validation | (incluido) | Validación de DTOs |
-| Maven | 3.9+       | Gestión de dependencias |
+Consola H2: `http://localhost:8080/h2-console`  
+JDBC URL: `jdbc:h2:mem:polizasdb` · User: `sa` · Password: *(vacío)*
 
 ---
 
-## Arquitectura del proyecto
+## Seguridad
 
-El proyecto sigue una **arquitectura en capas** (Layered Architecture) con separación clara de responsabilidades:
+Todos los endpoints (excepto `/core-mock/**` y `/h2-console/**`) requieren el header:
+
+```
+x-api-key: 123456
+```
+
+Sin el header → `401 Unauthorized`.
+
+---
+
+## Endpoints
+
+| Método | Endpoint | Descripción | API Key |
+|--------|----------|-------------|---------|
+| GET | `/polizas?tipo=&estado=` | Lista pólizas filtrando por tipo y/o estado |
+| POST | `/polizas` | Crea una póliza | 
+| POST | `/polizas/{id}/renovar` | Renueva (canon y prima +IPC) |
+| POST | `/polizas/{id}/cancelar` | Cancela póliza y todos sus riesgos |
+| GET | `/polizas/{id}/riesgos` | Lista riesgos de una póliza | 
+| POST | `/polizas/{id}/riesgos` | Agrega riesgo (solo COLECTIVA) |
+| POST | `/riesgos/{id}/cancelar` | Cancela un riesgo |
+| POST | `/core-mock/evento` | Mock del CORE (logs) |
+
+---
+
+##  Reglas de negocio
+
+| # | Regla |
+|---|-------|
+| 1 | Una póliza individual solo puede tener 1 riesgo |
+| 2 | No se puede renovar una póliza cancelada |
+| 3 | La cancelación de una póliza cancela todos sus riesgos |
+| 4 | Agregar riesgo exige que la póliza sea COLECTIVA |
+| 5 | Prima = canon × meses de vigencia |
+| 6 | Renovación incrementa canon y prima según IPC (5% por defecto) |
+
+El IPC se configura en `application.yml`:
+
+```yaml
+app:
+  negocio:
+    ipc: 0.05
+```
+
+---
+
+## Integración con el CORE (mock)
+
+Cada operación de escritura dispara un evento al CORE vía `CoreIntegrationService`:
+
+| Acción | Evento |
+|--------|--------|
+| Crear póliza | `CREACION` |
+| Renovar / modificar | `ACTUALIZACION` |
+| Cancelar póliza | `CANCELACION` |
+
+El mock registra en logs el evento recibido. En producción, este adapter apuntaría al servicio agnóstico de edición en WebLogic.
+
+---
+
+## Ejemplos rápidos
+
+### Crear póliza individual
+
+```bash
+curl -X POST http://localhost:8080/polizas \
+  -H "x-api-key: 123456" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "numeroPoliza": "POL-IND-001",
+    "tipo": "INDIVIDUAL",
+    "tomador": "Juan Pérez",
+    "asegurado": "Juan Pérez",
+    "beneficiario": "María López",
+    "fechaInicioVigencia": "2026-01-01",
+    "fechaFinVigencia": "2026-07-01",
+    "canonMensual": 1500000,
+    "mesesVigencia": 6
+  }'
+```
+
+### Renovar
+
+```bash
+curl -X POST http://localhost:8080/polizas/1/renovar \
+  -H "x-api-key: 123456"
+```
+
+### Cancelar póliza (cancela todos sus riesgos)
+
+```bash
+curl -X POST http://localhost:8080/polizas/1/cancelar \
+  -H "x-api-key: 123456"
+```
+
+### Agregar riesgo a póliza colectiva
+
+```bash
+curl -X POST http://localhost:8080/polizas/2/riesgos \
+  -H "x-api-key: 123456" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "descripcion": "Arriendo Apt 301",
+    "direccionInmueble": "Calle 100 #15-30",
+    "arrendatario": "Pedro Gómez",
+    "arrendador": "Inmobiliaria XYZ"
+  }'
+```
+
+### Mock del CORE
+
+```bash
+curl -X POST http://localhost:8080/core-mock/evento \
+  -H "Content-Type: application/json" \
+  -d '{"evento":"ACTUALIZACION","polizaId":555}'
+```
+
+---
+
+## Manejo de errores
+
+Todos los errores se manejan con `GlobalExceptionHandler` (`@RestControllerAdvice`):
+
+| Excepción | HTTP | Ejemplo |
+|-----------|------|---------|
+| `BusinessException` | 400 | `"No se puede renovar una póliza cancelada"` |
+| `MethodArgumentNotValidException` | 400 | Validaciones de campos |
+| `Exception` | 500 | Errores inesperados |
+
+Ejemplo:
+```json
+{ "error": "Solo se pueden agregar riesgos a pólizas de tipo COLECTIVA" }
+```
+
+---
+
+## Estructura del proyecto
+
+```
+src/main/java/com/segurosbolivar/polizas/
+├── config/         ApiKeyFilter
+├── controller/     PolizaController, RiesgoController, CoreMockController
+├── dto/            Request/Response DTOs
+├── entity/         Poliza, Riesgo, Enums
+├── exception/      BusinessException, GlobalExceptionHandler
+├── repository/     PolizaRepository, RiesgoRepository
+└── service/        PolizaService, RiesgoService, CoreIntegrationService
+```
 
